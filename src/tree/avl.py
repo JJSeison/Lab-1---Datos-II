@@ -1,130 +1,148 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Optional, Any, Callable
+from dataclasses import dataclass
+from typing import Optional, List, Tuple, Any, Iterable, Callable
 
 @dataclass
 class AVLNode:
-    key: float
-    iso3: str
-    payload: Any
+    key: Any
+    payload: Any          # CountryRec u otro
     left: Optional["AVLNode"] = None
     right: Optional["AVLNode"] = None
+    parent: Optional["AVLNode"] = None
     height: int = 1
-    parent: Optional["AVLNode"] = field(default=None, repr=False)
 
-    def level(self) -> int:
-        lvl, p = 0, self.parent
-        while p:
-            lvl += 1
-            p = p.parent
-        return lvl
-
+    # extras que pide el lab
     def balance_factor(self) -> int:
-        lh = self.left.height if self.left else 0
-        rh = self.right.height if self.right else 0
-        return lh - rh
+        return (self.left.height if self.left else 0) - (self.right.height if self.right else 0)
 
+    # utilidades de “familia”
+    def parent_of(self) -> Optional["AVLNode"]:
+        return self.parent
     def grandparent(self) -> Optional["AVLNode"]:
         return self.parent.parent if self.parent else None
-
     def uncle(self) -> Optional["AVLNode"]:
         g = self.grandparent()
-        if not g:
-            return None
-        return g.right if g.left is self.parent else g.left
+        if not g: return None
+        return g.right if self.parent is g.left else g.left
 
-def _h(n: Optional[AVLNode]) -> int: return n.height if n else 0
-def _upd(n: AVLNode) -> None: n.height = max(_h(n.left), _h(n.right)) + 1
-
-def _rotate_right(y: AVLNode) -> AVLNode:
-    x = y.left; T2 = x.right if x else None
-    x.right = y; y.left = T2
-    if T2: T2.parent = y
-    x.parent, y.parent = y.parent, x
-    _upd(y); _upd(x)
-    return x
-
-def _rotate_left(x: AVLNode) -> AVLNode:
-    y = x.right; T2 = y.left if y else None
-    y.left = x; x.right = T2
-    if T2: T2.parent = x
-    y.parent, x.parent = x.parent, y
-    _upd(x); _upd(y)
-    return y
-
-def _rebalance(n: AVLNode) -> AVLNode:
-    _upd(n)
-    bf = n.balance_factor()
-    if bf > 1:
-        if n.left and n.left.balance_factor() < 0:
-            n.left = _rotate_left(n.left); n.left.parent = n
-        return _rotate_right(n)
-    if bf < -1:
-        if n.right and n.right.balance_factor() > 0:
-            n.right = _rotate_right(n.right); n.right.parent = n
-        return _rotate_left(n)
-    return n
 
 class AVLTree:
-    def __init__(self, cmp: Callable[[float, float], int] | None = None):
+    def __init__(self):
         self.root: Optional[AVLNode] = None
-        self.cmp = cmp or (lambda a, b: (a > b) - (a < b))
+        self._size = 0
 
-    def _insert(self, node: Optional[AVLNode], key: float, iso3: str, payload: Any, parent=None) -> AVLNode:
-        if node is None:
-            return AVLNode(key, iso3, payload, parent=parent)
-        if self.cmp(key, node.key) < 0:
-            node.left = self._insert(node.left, key, iso3, payload, node)
-        else:
-            node.right = self._insert(node.right, key, iso3, payload, node)
-        return _rebalance(node)
+    # ------------- utilidades internas -------------
+    def _h(self, n: Optional[AVLNode]) -> int: return n.height if n else 0
+    def _upd(self, n: AVLNode):
+        n.height = 1 + max(self._h(n.left), self._h(n.right))
+    def _rot_right(self, y: AVLNode) -> AVLNode:
+        x = y.left; T2 = x.right
+        x.right = y; y.left = T2
+        if T2: T2.parent = y
+        x.parent = y.parent; y.parent = x
+        self._upd(y); self._upd(x)
+        return x
+    def _rot_left(self, x: AVLNode) -> AVLNode:
+        y = x.right; T2 = y.left
+        y.left = x; x.right = T2
+        if T2: T2.parent = x
+        y.parent = x.parent; x.parent = y
+        self._upd(x); self._upd(y)
+        return y
 
-    def insert(self, key: float, iso3: str, payload: Any) -> None:
-        self.root = self._insert(self.root, key, iso3, payload)
+    def _rebalance(self, node: AVLNode) -> AVLNode:
+        self._upd(node)
+        bf = node.balance_factor()
+        # left heavy
+        if bf > 1:
+            if node.left and node.left.balance_factor() < 0:
+                node.left = self._rot_left(node.left); node.left.parent = node
+            return self._rot_right(node)
+        # right heavy
+        if bf < -1:
+            if node.right and node.right.balance_factor() > 0:
+                node.right = self._rot_right(node.right); node.right.parent = node
+            return self._rot_left(node)
+        return node
 
-    def search(self, key: float) -> Optional[AVLNode]:
+    # ------------- API pública -------------
+    def insert(self, key: Any, payload: Any):
+        """Inserta por key; si hay colisión, desempata con ISO3 del payload"""
+        def _ins(cur: Optional[AVLNode], key, payload, parent=None) -> AVLNode:
+            if not cur:
+                self._size += 1
+                n = AVLNode(key, payload, parent=parent)
+                return n
+            # desempate: (key, iso3)
+            kcur = (cur.key, getattr(cur.payload, "iso3", ""))
+            knew = (key,  getattr(payload, "iso3", ""))
+            if knew < kcur:
+                cur.left = _ins(cur.left, key, payload, cur)
+            else:
+                cur.right = _ins(cur.right, key, payload, cur)
+            cur = self._rebalance(cur)
+            return cur
+        self.root = _ins(self.root, key, payload, None)
+
+    def search_key(self, key: Any) -> Optional[AVLNode]:
         cur = self.root
         while cur:
-            c = self.cmp(key, cur.key)
-            if c == 0:
-                return cur
-            cur = cur.left if c < 0 else cur.right
+            kcur = (cur.key, getattr(cur.payload, "iso3", ""))
+            knew = (key,  "")
+            if knew == kcur: return cur
+            if knew < kcur: cur = cur.left
+            else:           cur = cur.right
         return None
 
-    def _min(self, n: AVLNode) -> AVLNode:
+    def _min_node(self, n: AVLNode) -> AVLNode:
         while n.left: n = n.left
         return n
 
-    def _delete(self, node: Optional[AVLNode], key: float) -> Optional[AVLNode]:
-        if node is None:
-            return None
-        c = self.cmp(key, node.key)
-        if c < 0:
-            node.left = self._delete(node.left, key)
-            if node.left: node.left.parent = node
-        elif c > 0:
-            node.right = self._delete(node.right, key)
-            if node.right: node.right.parent = node
-        else:
-            if not node.left or not node.right:
-                child = node.left or node.right
-                if child: child.parent = node.parent
-                return child
-            s = self._min(node.right)
-            node.key, node.iso3, node.payload = s.key, s.iso3, s.payload
-            node.right = self._delete(node.right, s.key)
-            if node.right: node.right.parent = node
-        return _rebalance(node)
+    def delete(self, key: Any):
+        def _del(cur: Optional[AVLNode], key) -> Optional[AVLNode]:
+            if not cur: return None
+            if (key, "") < (cur.key, getattr(cur.payload, "iso3", "")):
+                cur.left = _del(cur.left, key)
+                if cur.left: cur.left.parent = cur
+            elif (key, "") > (cur.key, getattr(cur.payload, "iso3", "")):
+                cur.right = _del(cur.right, key)
+                if cur.right: cur.right.parent = cur
+            else:
+                # encontrado
+                if not cur.left or not cur.right:
+                    self._size -= 1
+                    child = cur.left or cur.right
+                    if child: child.parent = cur.parent
+                    return child
+                # dos hijos
+                succ = self._min_node(cur.right)
+                cur.key, cur.payload = succ.key, succ.payload
+                cur.right = _del(cur.right, succ.key)
+                if cur.right: cur.right.parent = cur
+            if not cur: return None
+            cur = self._rebalance(cur)
+            return cur
+        self.root = _del(self.root, key)
 
-    def delete(self, key: float) -> None:
-        if self.root:
-            self.root = self._delete(self.root, key)
-            if self.root: self.root.parent = None
+    def size(self) -> int: return self._size
 
-    def bfs_levels(self) -> list[list[str]]:
-        if not self.root: return []
-        q = [self.root]; out: list[list[str]] = []
+    # ----- recorrido por niveles (ISO3) -----
+    def levels_iso3(self, max_layers: int | None = None) -> List[List[str]]:
+        res: List[List[str]] = []
+        if not self.root: return res
+        q: List[Tuple[AVLNode,int]] = [(self.root,0)]
         while q:
-            out.append([n.iso3 for n in q])
-            q = [c for n in q for c in (n.left, n.right) if c]
-        return out
+            n, lvl = q.pop(0)
+            if len(res) <= lvl: res.append([])
+            iso = getattr(n.payload, "iso3", str(n.key))
+            res[lvl].append(iso)
+            if n.left:  q.append((n.left,  lvl+1))
+            if n.right: q.append((n.right, lvl+1))
+            if max_layers is not None and lvl+1 >= max_layers and not q: break
+        return res
+
+    # ----- info estructural del nodo -----
+    def level_of(self, node: AVLNode) -> int:
+        lvl = 0; cur = node
+        while cur.parent: lvl += 1; cur = cur.parent
+        return lvl
