@@ -1,89 +1,95 @@
 from __future__ import annotations
-import math, statistics as stats
-from typing import List, Optional
 
+import math
 import pandas as pd
 
 from src.data import load_dataset, YEARS, CountryRec
-from src.tree.avl import AVLTree
+from src.tree.avl import AVLTree, AVLNode
+from src.ui import titulo, hr, panel  # kv/yesno NO son necesarios aquí
 from src.vis import export_tree_png
-from src.ui import titulo, kv, bullets, yesno, panel, hr
 
-CSV = "data/dataset_climate_change.csv"
+# ===================== Config de la métrica =====================
+# "mean" = promedio del período; "year" = un año específico (METRIC_YEAR)
+METRIC = "mean"          # "mean" | "year"
+METRIC_YEAR = 2005
 
-# ---------- MÉTRICA DEL ÁRBOL ----------
-# "mean"  -> key = temperatura media del país (1961–2022)
-# "year"  -> key = valor del año METRIC_YEAR (columna F{METRIC_YEAR})
-METRIC = "mean"        # "mean" | "year"
-METRIC_YEAR = 2005     # solo aplica si METRIC == "year"
-
-def key_of(rec: CountryRec) -> float:
-    if METRIC == "year":
-        return float(rec.yearly.get(METRIC_YEAR, math.nan))
-    return float(rec.mean_temp)
 
 def _key_label() -> str:
     return "mean" if METRIC == "mean" else f"F{METRIC_YEAR}"
 
-# ---------- CONSULTAS PEDIDAS ----------
-def nodo_mayor_promedio_anual(records: List[CountryRec], year: int, df: pd.DataFrame) -> List[CountryRec]:
-    media_y = float(df[f"F{year}"].mean(skipna=True))
-    return [r for r in records if r.yearly.get(year) is not None and r.yearly[year] > media_y]
 
-def nodo_menor_promedio_global(records: List[CountryRec], year: int, df: pd.DataFrame) -> List[CountryRec]:
-    vals = df[[c for c in df.columns if c.startswith("F")]].to_numpy().flatten()
-    vals = [v for v in vals if not pd.isna(v)]
-    grand_mean = float(stats.mean(vals))
-    return [r for r in records if r.yearly.get(year) is not None and r.yearly[year] < grand_mean]
+def key_of(rec: CountryRec) -> float:
+    if METRIC == "mean":
+        return rec.mean_temp
+    return rec.yearly.get(METRIC_YEAR, math.nan)
 
-def media_mayor_igual_umbral(records: List[CountryRec], umbral: float) -> List[CountryRec]:
-    return [r for r in records if not pd.isna(r.mean_temp) and r.mean_temp >= umbral]
 
-# ---------- CONSTRUCCIÓN DEL ÁRBOL ----------
-def build_tree(records: List[CountryRec]) -> AVLTree:
-    tree = AVLTree()
+# ===================== Utils de negocio =====================
+def build_tree(records: list[CountryRec]) -> AVLTree:
+    t = AVLTree()
     for r in records:
         k = key_of(r)
-        if not pd.isna(k):
-            tree.insert(k, r)
-    return tree
+        if pd.isna(k):  # salta países sin dato en la métrica
+            continue
+        t.insert(k, r)
+    return t
 
-# ---------- UTILIDADES DE MENÚ ----------
-def show_levels(tree: AVLTree):
-    niveles = tree.levels_iso3()
+
+def find_node_by_iso3(tree: AVLTree, iso3: str) -> AVLNode | None:
+    """Búsqueda por ISO3 recorriendo el árbol (BFS)."""
+    if not tree.root:
+        return None
+    q: list[AVLNode] = [tree.root]
+    iso3 = iso3.upper()
+    while q:
+        n = q.pop(0)
+        if getattr(n.payload, "iso3", "").upper() == iso3:
+            return n
+        if n.left:
+            q.append(n.left)
+        if n.right:
+            q.append(n.right)
+    return None
+
+
+def show_levels(tree: AVLTree) -> None:
     titulo("Recorrido por niveles (solo ISO3)")
-    for i, lvl in enumerate(niveles):
-        print(f"Nivel {i}: " + ", ".join(lvl))
+    for i, lvl in enumerate(tree.levels_iso3()):
+        print(f"Nivel {i}: {', '.join(lvl)}")
+    hr()
 
-def select_from_list(items: List[CountryRec], prompt: str = "   Índice: ") -> Optional[CountryRec]:
-    if not items:
-        print("   No hay elementos.")
-        return None
-    for i, r in enumerate(items):
-        mt = "NA" if pd.isna(r.mean_temp) else f"{r.mean_temp:.3f}"
-        print(f"   [{i}] {r.country} ({r.iso3})  mean={mt}")
-    try:
-        raw = input(prompt).strip()
-        if raw == "":
-            return None
-        idx = int(raw)
-        return items[idx]
-    except Exception:
-        print("   Selección inválida.")
-        return None
 
-# ================ MENÚ =================
-last_selection: list = []  # guarda el último nodo seleccionado (para opción 6)
+# ===================== Criterios del enunciado =====================
+def criterio_a(records: list[CountryRec], year: int, df: pd.DataFrame) -> list[CountryRec]:
+    """a) valor del país en 'year' > promedio de todos los países en ese 'year'"""
+    col = f"F{year}"
+    media = df[col].mean(skipna=True)
+    return [r for r in records if r.yearly.get(year) is not None and r.yearly[year] > media]
 
+
+def criterio_b(records: list[CountryRec], year: int, df: pd.DataFrame) -> list[CountryRec]:
+    """b) valor del país en 'year' < promedio global de todos los países en todos los años"""
+    media_global = df[[f"F{y}" for y in YEARS]].stack().mean(skipna=True)
+    return [r for r in records if r.yearly.get(year) is not None and r.yearly[year] < media_global]
+
+
+def criterio_c(records: list[CountryRec], umbral: float) -> list[CountryRec]:
+    """c) mean >= umbral"""
+    return [r for r in records if r.mean_temp is not None and r.mean_temp >= umbral]
+
+
+# ===================== App =====================
 def main():
+    CSV = "data/dataset_climate_change.csv"
     records, df = load_dataset(CSV)
     tree = build_tree(records)
+    selected: AVLNode | None = None
 
     while True:
-        hr("="); print("OPERACIONES"); hr("=")
+        titulo("OPERACIONES")
         print("1) Insertar un nodo (por ISO3)")
-        print("2) Eliminar un nodo (por key de la métrica)")
-        print("3) Buscar un nodo (por key de la métrica)")
+        print("2) Eliminar un nodo (por key o ISO3)")
+        print("3) Buscar un nodo (por key o ISO3)")
         print("4) Buscar nodos por criterios (a/b/c)")
         print("5) Recorrido por niveles (ISO3)")
         print("6) Nivel / BF / padre / abuelo / tío (del nodo seleccionado)")
@@ -91,115 +97,172 @@ def main():
         print("0) Salir")
         op = input(">> ").strip()
 
-        if op == "0":
-            print("Hasta luego.")
-            break
-
-        elif op == "1":
+        # ------------- 1) Insertar (evita duplicados por ISO3) -------------
+        if op == "1":
             iso = input("ISO3 a insertar: ").upper().strip()
-            rec = next((r for r in records if r.iso3 == iso), None)
+            rec = next((r for r in records if r.iso3.upper() == iso), None)
             if not rec:
                 print("ISO3 no encontrado en el dataset.")
-                continue
-            key = key_of(rec)
-            if pd.isna(key):
+                hr(); continue
+
+            # evitar duplicado por ISO3
+            existing = find_node_by_iso3(tree, iso)
+            if existing:
+                print(f"{iso} ya existe en el árbol con key={existing.key:.3f}. No se inserta duplicado.")
+                hr(); continue
+
+            k = key_of(rec)
+            if pd.isna(k):
                 print("La métrica es NaN para ese país; no se puede insertar.")
-                continue
-            tree.insert(key, rec)
-            print(f"Insertado {rec.country} ({iso}) con key={key:.3f} ({_key_label()}).")
+                hr(); continue
+
+            tree.insert(k, rec)
+            print(f"Insertado {rec.country} ({iso}) con key={k:.3f} ({_key_label()}).")
             try:
                 export_tree_png(tree, "out/tree_after_insert.png", key_name=_key_label(), key_unit="°C")
                 print("Imagen generada: out/tree_after_insert.png")
             except Exception as e:
                 print("(Aviso) No se pudo exportar la imagen:", e)
+            hr()
 
+        # ------------- 2) Eliminar (por key o ISO3) -------------
         elif op == "2":
+            s = input("Key a eliminar (o ISO3): ").strip().upper()
+            node: AVLNode | None = None
+            # ¿es número?
             try:
-                key = float(input(f"Key a eliminar (métrica {_key_label()}): "))
-                tree.delete(key)
-                print("Eliminado por key.")
-                try:
-                    export_tree_png(tree, "out/tree_after_delete.png", key_name=_key_label(), key_unit="°C")
-                    print("Imagen generada: out/tree_after_delete.png")
-                except Exception as e:
-                    print("(Aviso) No se pudo exportar la imagen:", e)
-            except Exception:
-                print("Key inválida.")
+                k = float(s)
+                node = tree.search_key(k)
+            except ValueError:
+                node = find_node_by_iso3(tree, s)
 
+            if not node:
+                print("No encontrado.")
+                hr(); continue
+
+            tree.delete(node.key)
+            iso = getattr(node.payload, "iso3", "?")
+            print(f"Eliminado {iso} (key={node.key:.3f}).")
+            try:
+                export_tree_png(tree, "out/tree_after_delete.png", key_name=_key_label(), key_unit="°C")
+                print("Imagen generada: out/tree_after_delete.png")
+            except Exception as e:
+                print("(Aviso) No se pudo exportar la imagen:", e)
+
+            if selected is node:
+                selected = None
+            hr()
+
+        # ------------- 3) Buscar (por key o ISO3) -------------
         elif op == "3":
+            s = input("Key o ISO3 a buscar: ").strip().upper()
+            node: AVLNode | None = None
             try:
-                key = float(input(f"Key a buscar (métrica {_key_label()}): "))
-                node = tree.search_key(key)
-                if node:
-                    r = node.payload
-                    print(f"Encontrado: {r.country} ({r.iso3})  key={node.key:.3f}")
-                    last_selection[:] = [node]
-                else:
-                    print("No encontrado.")
-            except Exception:
-                print("Key inválida.")
+                k = float(s)
+                node = tree.search_key(k)
+            except ValueError:
+                node = find_node_by_iso3(tree, s)
 
-        elif op == "4":
-            print("   Criterios:")
-            print("   a) Valor de un año > promedio del año")
-            print("   b) Valor de un año < promedio global (todos los años)")
-            print("   c) Media del país ≥ umbral")
-            sub = input("   Elige (a/b/c): ").lower().strip()
-
-            res: List[CountryRec] = []
-            if sub == "a":
-                y = int(input("   Año (p.ej. 2005): "))
-                res = nodo_mayor_promedio_anual(records, y, df)
-            elif sub == "b":
-                y = int(input("   Año (p.ej. 2005): "))
-                res = nodo_menor_promedio_global(records, y, df)
-            elif sub == "c":
-                u = float(input("   Umbral (°C): "))
-                res = media_mayor_igual_umbral(records, u)
+            if not node:
+                print("No encontrado.")
             else:
-                print("   Opción inválida."); continue
+                selected = node
+                r: CountryRec = node.payload
+                body = (
+                    f"País: {r.country} ({r.iso3})\n"
+                    f"Key: {node.key:.3f} ({_key_label()})\n"
+                    f"BF: {node.balance_factor()}"
+                )
+                panel("Nodo seleccionado", body)
+            hr()
 
-            print(f"   Se encontraron {len(res)} países.")
-            sel = select_from_list(res, prompt="   Índice para seleccionar (enter para omitir): ")
-            if sel:
-                node = tree.search_key(key_of(sel))
-                if node:
-                    last_selection[:] = [node]
-                    print(f"   Seleccionado: {sel.country} ({sel.iso3}). Usa opción 6 para ver nivel/BF/familia.")
+        # ------------- 4) Criterios a/b/c -------------
+        elif op == "4":
+            print("a) año dado > promedio de ese año")
+            print("b) año dado < promedio global de todos los años")
+            print("c) media >= umbral")
+            sub = input("Opción (a/b/c): ").strip().lower()
 
+            if sub == "a":
+                y = int(input(f"Año {YEARS[0]}..{YEARS[-1]}: "))
+                lst = criterio_a(records, y, df)
+            elif sub == "b":
+                y = int(input(f"Año {YEARS[0]}..{YEARS[-1]}: "))
+                lst = criterio_b(records, y, df)
+            elif sub == "c":
+                um = float(input("Umbral (°C): "))
+                lst = criterio_c(records, um)
+            else:
+                print("Opción inválida.")
+                hr(); continue
+
+            if not lst:
+                print("No hay resultados.")
+                hr(); continue
+
+            # listar (muestra índice para poder seleccionar uno)
+            for i, r in enumerate(lst):
+                print(f"[{i:02d}] {r.country} ({r.iso3})  mean={r.mean_temp:.3f}")
+            s = input("Índice para seleccionar (enter para omitir): ").strip()
+            if s != "":
+                try:
+                    idx = int(s)
+                    rec = lst[idx]
+                    node = find_node_by_iso3(tree, rec.iso3)
+                    if node:
+                        selected = node
+                        print(f"Seleccionado {rec.country} ({rec.iso3}).")
+                    else:
+                        print("Ese país no está en el árbol.")
+                except Exception:
+                    print("Selección inválida.")
+            hr()
+
+        # ------------- 5) Niveles -------------
         elif op == "5":
             show_levels(tree)
 
+        # ------------- 6) Info del nodo seleccionado -------------
         elif op == "6":
-            if not last_selection:
-                print("Primero usa la opción 3 o 4 para seleccionar un nodo.")
-                continue
-            node = last_selection[0]
-            lvl = tree.level_of(node)
-            bf = node.balance_factor()
-            padre = node.parent.payload.iso3 if node.parent else "—"
-            abuelo = node.grandparent().payload.iso3 if node.grandparent() else "—"
-            tio = node.uncle().payload.iso3 if node.uncle() else "—"
-            panel(
-                f"País: {node.payload.country} ({node.payload.iso3})\n"
-                f"Key[{_key_label()}]: {node.key:.3f} °C\n"
-                f"Nivel: {lvl}\n"
-                f"BF: {bf}\n"
-                f"Padre: {padre}\n"
-                f"Abuelo: {abuelo}\n"
-                f"Tío: {tio}",
-                title="Nodo seleccionado"
-            )
+            if not selected:
+                print("No hay nodo seleccionado (usa la opción 3 o 4).")
+                hr(); continue
 
+            r: CountryRec = selected.payload
+            print(f"ISO3:  {r.iso3} - {r.country}")
+            print(f"Nivel: {tree.level_of(selected)}")
+            print(f"BF:    {selected.balance_factor()}")
+
+            p = selected.parent
+            g = selected.grandparent()
+            u = selected.uncle()
+            if p:
+                print(f"Padre:  {getattr(p.payload, 'iso3', '?')}")
+            if g:
+                print(f"Abuelo: {getattr(g.payload, 'iso3', '?')}")
+            if u:
+                print(f"Tío:    {getattr(u.payload, 'iso3', '?')}")
+            hr()
+
+        # ------------- 7) Exportar PNG -------------
         elif op == "7":
             try:
                 export_tree_png(tree, "out/tree.png", key_name=_key_label(), key_unit="°C")
                 print("Imagen generada: out/tree.png")
             except Exception as e:
                 print("(Aviso) No se pudo exportar la imagen:", e)
+            hr()
 
+        elif op == "0":
+            break
         else:
             print("Opción inválida.")
+            hr()
+
 
 if __name__ == "__main__":
     main()
+
+
+
+
